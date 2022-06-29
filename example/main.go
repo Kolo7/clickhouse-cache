@@ -7,8 +7,8 @@ import (
 	"log"
 	"time"
 
-	"github.com/prashanthpai/sqlcache"
-	"github.com/prashanthpai/sqlcache/cache"
+	"github.com/Kolo7/clickhouse-cache"
+	"github.com/Kolo7/clickhouse-cache/cache"
 
 	"github.com/dgraph-io/ristretto"
 	redis "github.com/go-redis/redis/v7"

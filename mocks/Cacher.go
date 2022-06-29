@@ -3,7 +3,7 @@
 package mocks
 
 import (
-	cache "github.com/prashanthpai/sqlcache/cache"
+	cache "github.com/Kolo7/clickhouse-cache/cache"
 	mock "github.com/stretchr/testify/mock"
 
 	time "time"

@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/prashanthpai/sqlcache/cache"
+	"github.com/Kolo7/clickhouse-cache/cache"
 
 	"github.com/dgraph-io/ristretto"
 )

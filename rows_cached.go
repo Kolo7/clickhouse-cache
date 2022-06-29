@@ -4,7 +4,7 @@ import (
 	"database/sql/driver"
 	"io"
 
-	"github.com/prashanthpai/sqlcache/cache"
+	"github.com/Kolo7/clickhouse-cache/cache"
 )
 
 // rowsCached implements driver.Rows interface

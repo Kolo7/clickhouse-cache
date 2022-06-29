@@ -3,7 +3,7 @@ package sqlcache
 import (
 	"time"
 
-	"github.com/prashanthpai/sqlcache/cache"
+	"github.com/Kolo7/clickhouse-cache/cache"
 
 	redis "github.com/go-redis/redis/v7"
 	msgpack "github.com/vmihailenco/msgpack/v4"

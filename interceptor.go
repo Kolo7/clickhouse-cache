@@ -7,8 +7,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Kolo7/clickhouse-cache/cache"
 	"github.com/ngrok/sqlmw"
-	"github.com/prashanthpai/sqlcache/cache"
 )
 
 // Config is the configuration passed to NewInterceptor for creating new
@@ -86,15 +86,17 @@ func (i *Interceptor) Disable() {
 }
 
 // StmtQueryContext intecepts database/sql's stmt.QueryContext calls from a prepared statement.
-func (i *Interceptor) StmtQueryContext(ctx context.Context, conn driver.StmtQueryContext, query string, args []driver.NamedValue) (driver.Rows, error) {
+func (i *Interceptor) StmtQueryContext(ctx context.Context, conn driver.StmtQueryContext, query string, args []driver.NamedValue) (context.Context, driver.Rows, error) {
 
 	if i.disabled {
-		return conn.QueryContext(ctx, args)
+		rows, err := conn.QueryContext(ctx, args)
+		return ctx, rows, err
 	}
 
 	attrs := getAttrs(query)
 	if attrs == nil {
-		return conn.QueryContext(ctx, args)
+		rows, err := conn.QueryContext(ctx, args)
+		return ctx, rows, err
 	}
 
 	hash, err := i.hashFunc(query, args)
@@ -103,7 +105,8 @@ func (i *Interceptor) StmtQueryContext(ctx context.Context, conn driver.StmtQuer
 		if i.onErr != nil {
 			i.onErr(fmt.Errorf("HashFunc failed: %w", err))
 		}
-		return conn.QueryContext(ctx, args)
+		rows, err := conn.QueryContext(ctx, args)
+		return ctx, rows, err
 	}
 	// 按hash值加锁，相同的hash值db查询同时只能有一个，拿到写锁之后再查一次cache，有值就返回，没有就查sql
 	// 进入加读锁
@@ -113,7 +116,7 @@ func (i *Interceptor) StmtQueryContext(ctx context.Context, conn driver.StmtQuer
 		// log.Printf("clickhouse-cache, 命中缓存\n")
 		i.RUnlock(hash)
 		// log.Printf("clickhouse-cache, 释放读锁\n")
-		return cached, nil
+		return ctx, cached, nil
 	}
 	// log.Printf("clickhouse-cache, 缓存miss\n")
 	// 释放读锁，加写锁
@@ -133,14 +136,14 @@ func (i *Interceptor) StmtQueryContext(ctx context.Context, conn driver.StmtQuer
 	if cached := i.checkCache(hash); cached != nil {
 		wUnlockFunc()
 		// log.Printf("clickhouse-cache, 命中缓存\n")
-		return cached, nil
+		return ctx, cached, nil
 	}
 	// log.Printf("clickhouse-cache, 缓存再次miss\n")
 	// cache没有数据的话，再查db
 	rows, err := conn.QueryContext(ctx, args)
 	if err != nil {
 		wUnlockFunc()
-		return rows, err
+		return ctx, rows, err
 	}
 	// log.Printf("clickhouse-cache, 完成查询db\n")
 	// 写cache后释放写锁
@@ -156,19 +159,21 @@ func (i *Interceptor) StmtQueryContext(ctx context.Context, conn driver.StmtQuer
 		// log.Printf("clickhouse-cache, 写入缓存\n")
 	}
 
-	return newRowsRecorder(cacheSetter, rows, attrs.maxRows), err
+	return ctx, newRowsRecorder(cacheSetter, rows, attrs.maxRows), err
 }
 
 // ConnQueryContext intecepts database/sql's DB.QueryContext Conn.QueryContext calls.
-func (i *Interceptor) ConnQueryContext(ctx context.Context, conn driver.QueryerContext, query string, args []driver.NamedValue) (driver.Rows, error) {
+func (i *Interceptor) ConnQueryContext(ctx context.Context, conn driver.QueryerContext, query string, args []driver.NamedValue) (context.Context, driver.Rows, error) {
 
 	if i.disabled {
-		return conn.QueryContext(ctx, query, args)
+		rows, err := conn.QueryContext(ctx, query, args)
+		return ctx, rows, err
 	}
 
 	attrs := getAttrs(query)
 	if attrs == nil {
-		return conn.QueryContext(ctx, query, args)
+		rows, err := conn.QueryContext(ctx, query, args)
+		return ctx, rows, err
 	}
 
 	hash, err := i.hashFunc(query, args)
@@ -177,16 +182,17 @@ func (i *Interceptor) ConnQueryContext(ctx context.Context, conn driver.QueryerC
 		if i.onErr != nil {
 			i.onErr(fmt.Errorf("HashFunc failed: %w", err))
 		}
-		return conn.QueryContext(ctx, query, args)
+		rows, err := conn.QueryContext(ctx, query, args)
+		return ctx, rows, err
 	}
 
 	if cached := i.checkCache(hash); cached != nil {
-		return cached, nil
+		return ctx, cached, nil
 	}
 
 	rows, err := conn.QueryContext(ctx, query, args)
 	if err != nil {
-		return rows, err
+		return ctx, rows, err
 	}
 
 	cacheSetter := func(item *cache.Item) {
@@ -199,7 +205,7 @@ func (i *Interceptor) ConnQueryContext(ctx context.Context, conn driver.QueryerC
 		}
 	}
 
-	return newRowsRecorder(cacheSetter, rows, attrs.maxRows), err
+	return ctx, newRowsRecorder(cacheSetter, rows, attrs.maxRows), err
 }
 
 func (i *Interceptor) checkCache(hash string) driver.Rows {
