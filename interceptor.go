@@ -124,17 +124,13 @@ func (i *Interceptor) StmtQueryContext(ctx context.Context, conn driver.StmtQuer
 	// log.Printf("clickhouse-cache, 释放读锁\n")
 	i.Lock(hash)
 	// log.Printf("clickhouse-cache, 拿到写锁\n")
-	// 出错要解锁，或者是写入缓存后要解锁，正常流程结束方法还没有写入缓存不应该解锁
-	wUnlockFunc := func() {
-		i.Unlock(hash)
-		// log.Printf("clickhouse-cache, 释放写锁\n")
-	}
 
 	// 读锁应该要有超时机制，如果超过一段时间没有解锁，要主动的去解锁，这里可能用锁无法实现了，要用协程同步工具
 
 	// 加写锁后，再读一次cache
 	if cached := i.checkCache(hash); cached != nil {
-		wUnlockFunc()
+		// log.Printf("clickhouse-cache, 释放写锁\n")
+		i.Unlock(hash)
 		// log.Printf("clickhouse-cache, 命中缓存\n")
 		return ctx, cached, nil
 	}
@@ -142,13 +138,20 @@ func (i *Interceptor) StmtQueryContext(ctx context.Context, conn driver.StmtQuer
 	// cache没有数据的话，再查db
 	rows, err := conn.QueryContext(ctx, args)
 	if err != nil {
-		wUnlockFunc()
+		// log.Printf("clickhouse-cache, 释放写锁\n")
+		i.Unlock(hash)
 		return ctx, rows, err
 	}
-	// log.Printf("clickhouse-cache, 完成查询db\n")
 	// 写cache后释放写锁
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-done:
+			// log.Printf("clickhouse-cache, 释放写锁\n")
+			i.Unlock(hash)
+		}
+	}()
 	cacheSetter := func(item *cache.Item) {
-		defer wUnlockFunc()
 		err := i.c.Set(hash, item, time.Duration(attrs.ttl)*time.Second)
 		if err != nil {
 			atomic.AddUint64(&i.stats.Errors, 1)
@@ -159,20 +162,21 @@ func (i *Interceptor) StmtQueryContext(ctx context.Context, conn driver.StmtQuer
 		// log.Printf("clickhouse-cache, 写入缓存\n")
 	}
 
-	return ctx, newRowsRecorder(cacheSetter, rows, attrs.maxRows), err
+	return ctx, newRowsRecorder(cacheSetter, rows, attrs.maxRows, done), err
 }
 
 // ConnQueryContext intecepts database/sql's DB.QueryContext Conn.QueryContext calls.
 func (i *Interceptor) ConnQueryContext(ctx context.Context, conn driver.QueryerContext, query string, args []driver.NamedValue) (context.Context, driver.Rows, error) {
-
+	var rows driver.Rows
+	var err error
 	if i.disabled {
-		rows, err := conn.QueryContext(ctx, query, args)
+		rows, err = conn.QueryContext(ctx, query, args)
 		return ctx, rows, err
 	}
 
 	attrs := getAttrs(query)
 	if attrs == nil {
-		rows, err := conn.QueryContext(ctx, query, args)
+		rows, err = conn.QueryContext(ctx, query, args)
 		return ctx, rows, err
 	}
 
@@ -185,16 +189,33 @@ func (i *Interceptor) ConnQueryContext(ctx context.Context, conn driver.QueryerC
 		rows, err := conn.QueryContext(ctx, query, args)
 		return ctx, rows, err
 	}
-
+	i.RLock(hash)
 	if cached := i.checkCache(hash); cached != nil {
+		i.RUnlock(hash)
 		return ctx, cached, nil
 	}
 
-	rows, err := conn.QueryContext(ctx, query, args)
-	if err != nil {
-		return ctx, rows, err
+	i.RUnlock(hash)
+	i.Lock(hash)
+
+	if cached := i.checkCache(hash); cached != nil {
+		i.Unlock(hash)
+		return ctx, cached, nil
 	}
 
+	rows, err = conn.QueryContext(ctx, query, args)
+	if err != nil {
+		i.Unlock(hash)
+		return ctx, rows, err
+	}
+	// 写cache后释放写锁
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-done:
+			i.Unlock(hash)
+		}
+	}()
 	cacheSetter := func(item *cache.Item) {
 		err := i.c.Set(hash, item, time.Duration(attrs.ttl)*time.Second)
 		if err != nil {
@@ -205,7 +226,7 @@ func (i *Interceptor) ConnQueryContext(ctx context.Context, conn driver.QueryerC
 		}
 	}
 
-	return ctx, newRowsRecorder(cacheSetter, rows, attrs.maxRows), err
+	return ctx, newRowsRecorder(cacheSetter, rows, attrs.maxRows, done), err
 }
 
 func (i *Interceptor) checkCache(hash string) driver.Rows {

@@ -7,12 +7,13 @@ import (
 	"github.com/Kolo7/clickhouse-cache/cache"
 )
 
-func newRowsRecorder(setter func(item *cache.Item), rows driver.Rows, maxRows int) *rowsRecorder {
+func newRowsRecorder(setter func(item *cache.Item), rows driver.Rows, maxRows int, done chan<- struct{}) *rowsRecorder {
 	return &rowsRecorder{
 		item:    new(cache.Item),
 		setter:  setter,
 		maxRows: maxRows,
 		dr:      rows,
+		done:    done,
 	}
 }
 
@@ -24,6 +25,7 @@ type rowsRecorder struct {
 	maxRowsHit bool
 	maxRows    int
 	dr         driver.Rows
+	done       chan<- struct{}
 }
 
 func (r *rowsRecorder) Columns() []string {
@@ -43,6 +45,8 @@ func (r *rowsRecorder) Close() error {
 		r.setter(r.item)
 	}
 
+	// rows关闭，通知上游channel
+	close(r.done)
 	return nil
 }
 
